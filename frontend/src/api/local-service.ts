@@ -1,6 +1,7 @@
 import { MODULE_BY_KEY } from '@/data/modules'
-import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
-import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
+import { allRows, listRows, resetRows, saveRows, listTodos } from '@/data/local-store'
+import { syncDiaryTodos } from '@/data/diary'
+import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult, TodoItem } from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
 const NEGATIVE_ACTIONS = ['撤销', '作废', '拒绝', '驳回', '停用', '忽略', '下线', '回滚']
@@ -85,13 +86,23 @@ export function downloadEntries(key: string): void {
 }
 
 export function loadOverview(): OverviewResult {
+  // 取数前先对账：审核结论以发掘日记状态为准回写待办台账，保证概览看到的是最新结论。
+  syncDiaryTodos()
   const rows = allRows()
+  const todos = listTodos()
+  const openTodos = todos.filter((item) => !item.done)
   const modules = [...MODULE_BY_KEY.values()].map((meta) => {
     const entries = rows[meta.key] ?? []
+    // 发掘日记的待处理量改由审核待办台账提供（待审核 + 退回补录），不再只看行上的 pending 标记。
+    const pending =
+      meta.key === 'diary'
+        ? new Set(openTodos.filter((item) => item.module === 'diary').map((item) => item.entryId))
+            .size
+        : entries.filter((row) => row.pending).length
     return {
       name: meta.name,
       created: entries.length,
-      pending: entries.filter((row) => row.pending).length,
+      pending,
       abnormal: entries.filter((row) => row.abnormal).length,
     }
   })
@@ -101,5 +112,10 @@ export function loadOverview(): OverviewResult {
     { label: '待处理', value: modules.reduce((sum, item) => sum + item.pending, 0) },
     { label: '异常量', value: modules.reduce((sum, item) => sum + item.abnormal, 0) },
   ]
-  return { cards, modules }
+  return { cards, modules, todos, todoOpenCount: openTodos.length }
+}
+
+export function reviewTodos(): TodoItem[] {
+  syncDiaryTodos()
+  return listTodos()
 }
