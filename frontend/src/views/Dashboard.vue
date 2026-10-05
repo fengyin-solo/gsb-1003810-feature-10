@@ -28,6 +28,24 @@
         </tr>
       </tbody>
     </table>
+    <h3 class="section-title">待办台账</h3>
+    <table class="data-table">
+      <thead>
+        <tr><th>业务模块</th><th>事项</th><th>对象</th><th>待办人</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr v-for="todo in todos" :key="todo.key">
+          <td>{{ todo.module }}</td>
+          <td>{{ todo.item }}</td>
+          <td>{{ todo.target }}</td>
+          <td>{{ todo.owner || '—' }}</td>
+          <td>{{ todo.note }}</td>
+        </tr>
+        <tr v-if="!todos.length">
+          <td colspan="5" class="empty-state">暂无待办事项</td>
+        </tr>
+      </tbody>
+    </table>
     <footer class="page-foot">
       <span>数据保存在本机浏览器里，换浏览器或清缓存会回到示例数据</span>
     </footer>
@@ -42,12 +60,21 @@ import type { OverviewResult } from '@/data/types'
 
 const cards = ref<OverviewResult['cards']>([])
 const moduleRows = ref<OverviewResult['modules']>([])
+const todos = ref<OverviewResult['todos']>([])
 
 function refresh() {
   const payload = loadOverview()
   cards.value = payload.cards
   moduleRows.value = payload.modules
+  todos.value = payload.todos
 }
 
 onMounted(refresh)
 </script>
+
+<style scoped>
+.section-title {
+  margin: 16px 0 8px;
+  font-size: 15px;
+}
+</style>

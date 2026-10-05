@@ -11,6 +11,51 @@
       </div>
     </header>
 
+    <div class="seat-bar">
+      <span class="seat-label">当前席位：{{ store.operator }}（{{ store.seatDesc }}）</span>
+      <button
+        class="btn"
+        :class="{ primary: store.seat === 'recorder' }"
+        type="button"
+        @click="switchSeat('recorder')"
+      >
+        记录人席位
+      </button>
+      <button
+        class="btn"
+        :class="{ primary: store.seat === 'reviewer' }"
+        type="button"
+        @click="switchSeat('reviewer')"
+      >
+        审核席位
+      </button>
+      <label v-if="store.seat === 'recorder'" class="filter-item">
+        <span>记录人</span>
+        <select v-model="recorderName" @change="applySeat">
+          <option v-for="item in recorderOptions" :key="item.name" :value="item.name">
+            {{ item.name }}（{{ item.area }}）
+          </option>
+        </select>
+      </label>
+      <label v-else class="filter-item">
+        <span>审核发掘区</span>
+        <select v-model="reviewArea" @change="applySeat">
+          <option v-for="area in areaOptions" :key="area" :value="area">
+            {{ area }}（审核人 {{ reviewerOf(area) }}）
+          </option>
+        </select>
+      </label>
+    </div>
+
+    <form v-if="creating" class="filter-bar" @submit.prevent="submitCreate">
+      <label v-for="field in createFields" :key="field" class="filter-item">
+        <span>{{ field }}</span>
+        <input v-model="draft[field]" :placeholder="`填写${field}`" />
+      </label>
+      <button class="btn primary" type="submit">保存登记</button>
+      <button class="btn ghost" type="button" @click="creating = false">取消</button>
+    </form>
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -43,7 +88,7 @@
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">{{ row[column] || '—' }}</td>
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
@@ -65,6 +110,7 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条发掘日记记录</span>
+      <span v-if="noticeMessage" class="notice-text">{{ noticeMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -74,30 +120,75 @@
 import { computed, onMounted, ref } from 'vue'
 
 import {
+  createDiaryEntry,
   downloadEntries,
-  listEntries,
+  listDiaryEntries,
   moduleMeta,
-  runAction as applyAction,
+  runDiaryAction,
 } from '@/api/local-service'
-import type { EntryRow } from '@/data/types'
+import { DIARY_RECORDERS, EXCAVATION_AREAS, reviewerOf } from '@/data/review-seats'
+import type { DiarySeat, EntryRow } from '@/data/types'
+import { useSessionStore } from '@/stores/session'
 
 const meta = moduleMeta('diary')
-const columns = ["日记编号", "日期", "当日气候", "工作内容", "主要发现", "参与人员", "记录人", "日记状态"]
-const actions = ["提交审核", "确认审核", "退回补充"]
-const statuses = ["已录入", "需补充", "已审核", "已归档"]
-const stats = [{"label": "日记总数", "value": 0}, {"label": "已审核数", "value": 0}, {"label": "待审核数", "value": 0}]
+const store = useSessionStore()
+const columns = ["日记编号", "日期", "当日气候", "工作内容", "主要发现", "参与人员", "记录人", "所属发掘区", "审核人", "退回说明", "日记状态"]
+const statuses = meta.statuses
+const recorderOptions = DIARY_RECORDERS
+const areaOptions = EXCAVATION_AREAS
+const createFields = ["日期", "当日气候", "工作内容", "主要发现", "参与人员"]
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const noticeMessage = ref('')
 const filters = ref<Record<string, string>>({})
+const creating = ref(false)
+const draft = ref<Record<string, string>>({})
+const recorderName = ref(store.seat === 'recorder' ? store.operator : DIARY_RECORDERS[0].name)
+const reviewArea = ref(store.area)
 const filterFields = columns.slice(0, 3)
+
+// 记录人席位只能提交审核；审核席位执行确认/退回，跨区动作会被服务层按越权拒绝。
+const actions = computed(() =>
+  store.seat === 'reviewer' ? ['确认审核', '退回补充'] : ['提交审核'],
+)
+const stats = computed(() => [
+  { label: '日记总数', value: rows.value.length },
+  { label: '已审核数', value: rows.value.filter((row) => String(row.status) === '已审核').length },
+  { label: '待审核数', value: rows.value.filter((row) => String(row.status) === '待审核').length },
+])
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+
+function currentSeat(): DiarySeat {
+  return { role: store.seat, name: store.operator, area: store.area }
+}
+
+function switchSeat(seat: 'recorder' | 'reviewer') {
+  if (seat === store.seat) {
+    return
+  }
+  if (seat === 'recorder') {
+    store.useRecorderSeat(recorderName.value)
+  } else {
+    store.useReviewerSeat(reviewArea.value)
+  }
+  reload()
+}
+
+function applySeat() {
+  if (store.seat === 'recorder') {
+    store.useRecorderSeat(recorderName.value)
+  } else {
+    store.useReviewerSeat(reviewArea.value)
+  }
+  reload()
+}
 
 function resetFilters() {
   filters.value = {}
@@ -109,23 +200,43 @@ function exportRows() {
 }
 
 function openCreate() {
-  errorMessage.value = '发掘日记登记入口尚未接入审批流'
+  noticeMessage.value = ''
+  errorMessage.value = ''
+  if (store.seat !== 'recorder') {
+    errorMessage.value = '记录人与审核人分离，审核席位不能登记发掘日记'
+    return
+  }
+  draft.value = {}
+  creating.value = true
 }
 
-function runAction(action: string, row: EntryRow) {
-  errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+function submitCreate() {
+  const result = createDiaryEntry(currentSeat(), draft.value)
   if (!result.ok) {
     errorMessage.value = result.message
     return
   }
+  creating.value = false
+  noticeMessage.value = result.message
+  reload()
+}
+
+function runAction(action: string, row: EntryRow) {
+  errorMessage.value = ''
+  noticeMessage.value = ''
+  const result = runDiaryAction(currentSeat(), Number(row.id), action)
+  if (!result.ok) {
+    errorMessage.value = result.message
+    return
+  }
+  noticeMessage.value = result.message
   reload()
 }
 
 function reload() {
   errorMessage.value = ''
   try {
-    const payload = listEntries(meta.key, filters.value)
+    const payload = listDiaryEntries(currentSeat(), filters.value)
     rows.value = payload.items
     total.value = payload.total
   } catch (error) {
@@ -135,3 +246,25 @@ function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.seat-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.seat-label {
+  font-size: 13px;
+  color: var(--muted);
+  align-self: center;
+}
+.notice-text {
+  color: #067647;
+}
+</style>
